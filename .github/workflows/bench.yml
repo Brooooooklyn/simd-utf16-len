@@ -8,7 +8,7 @@ on:
 
 jobs:
   bench:
-    name: Benchmark (${{ matrix.os }})
+    name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

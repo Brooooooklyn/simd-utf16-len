@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   ab:
-    name: Perf A/B (${{ matrix.os }})
+    name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
