@@ -60,4 +60,4 @@ jobs:
       - run: cargo test --lib --features avx512 && cargo test --lib --release --features avx512
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ env.SDE_PATH }}/sde64 -spr --
-          SIMD_UTF16_LEN_EXPECT_KERNELS: sse2,avx2,avx512,avx512_skip
+          SIMD_UTF16_LEN_EXPECT_KERNELS: sse2,avx2,avx512
