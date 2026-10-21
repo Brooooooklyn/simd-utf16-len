@@ -186,7 +186,9 @@ pub mod __kernels {
         pub utf16_len: fn(&str) -> usize,
     }
 
-    /// Every kernel this CPU supports, ending with the one `utf16_len` runs.
+    /// Every kernel this CPU supports. `utf16_len` runs one of the
+    /// production kernels; experimental candidates, when present, come
+    /// after them.
     pub fn available() -> Vec<Kernel> {
         #[cfg(target_arch = "x86_64")]
         {
@@ -194,10 +196,23 @@ pub mod __kernels {
         }
         #[cfg(target_arch = "aarch64")]
         {
-            vec![Kernel {
+            let mut kernels = vec![Kernel {
                 name: "neon",
                 utf16_len: crate::aarch64::utf16_len,
-            }]
+            }];
+            if crate::aarch64::dotprod() {
+                // Candidates under evaluation, after the baseline they are
+                // measured against. `utf16_len` does not select them yet.
+                kernels.push(Kernel {
+                    name: "neon-udot",
+                    utf16_len: crate::aarch64::utf16_len_udot,
+                });
+                kernels.push(Kernel {
+                    name: "neon-cmp-sdot",
+                    utf16_len: crate::aarch64::utf16_len_cmp_sdot,
+                });
+            }
+            kernels
         }
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         {
@@ -434,6 +449,18 @@ mod tests {
         s.extend(std::iter::repeat_n('a', 4_294_968_958));
         assert_eq!(s.len(), 4_294_968_960);
         assert_eq!(utf16_len(&s), 4_294_968_959);
+    }
+
+    #[test]
+    fn larger_than_one_mib_batch() {
+        // Past neon-udot's 1 MiB accumulation batch (16,384 iterations of
+        // 64 bytes), so its widening flush and residual loops both run; the
+        // other kernels' batch bounds are smaller. 3 bytes per character:
+        // 349,525 x 3 = 1,048,575 and 349,526 x 3 = 1,048,578 straddle it.
+        for chars in [349_525, 349_526, 400_000] {
+            let s = "中".repeat(chars);
+            assert_eq!(utf16_len(&s), reference(&s), "chars: {chars}");
+        }
     }
 
     #[test]
