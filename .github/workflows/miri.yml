@@ -1,0 +1,38 @@
+name: Miri
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  miri:
+    name: Miri (x86_64-unknown-linux-gnu)
+    runs-on: ubuntu-latest
+    env:
+      # Validated on an Apple M5 Max with cargo 1.101.0-nightly (2026-10-07):
+      # this exact config runs the full suite green in ~24 minutes there.
+      #
+      # Target choice: aarch64 host Miri cannot run the NEON kernel at all —
+      # vaddlvq_u8 lowers to llvm.aarch64.neon.uaddlv, which has no Miri
+      # shim, and aborts the suite — while the x86_64 SSE2/AVX2 kernels are
+      # fully interpretable, so Miri interprets the linux target (no native
+      # code runs under Miri; the triple need not match the host).
+      #
+      # RUSTFLAGS: Miri's cpuid shim reports AVX2 only with +avx2, so without
+      # it only the SSE2 kernel would ever run.
+      #
+      # MIRIFLAGS: -Zmiri-disable-isolation lets the kernel-availability test
+      # read SIMD_UTF16_LEN_EXPECT_KERNELS, so a future Miri that stops
+      # covering SSE2 or AVX2 fails loudly instead of silently running less
+      # kernel code.
+      MIRIFLAGS: -Zmiri-disable-isolation
+      RUSTFLAGS: -C target-feature=+avx2
+      SIMD_UTF16_LEN_EXPECT_KERNELS: sse2,avx2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+      - run: cargo miri test --target x86_64-unknown-linux-gnu
