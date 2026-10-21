@@ -32,7 +32,7 @@ const WARMUP_ROUNDS: usize = 10;
 /// a fraction of a percent on the slower side.
 const SLOWER_RUN_PCT: f64 = 1.0;
 
-const USAGE: &str = "usage: simd-utf16-len-ab --base-exe <path> [--fail-above <percent>] [--json <path>] [--runs <n>] [--rounds <n>]";
+const USAGE: &str = "usage: simd-utf16-len-ab --base-exe <path> [--fail-above <percent>] [--json <path>] [--runs <n>] [--rounds <n>] [--input <name,name,...>]";
 
 struct Options {
     /// The binary built against the base ref; it answers `--child` like this one.
@@ -44,6 +44,8 @@ struct Options {
     rounds: usize,
     /// Time this one input and print the raw result for the parent process.
     child: Option<String>,
+    /// Measure only these inputs; unset measures the full list.
+    input: Option<Vec<String>>,
 }
 
 /// Median per-call times, head/base time ratio, and std/head speedup of one run.
@@ -122,6 +124,16 @@ fn main() -> ExitCode {
     inputs.extend(inputs::alignment());
     inputs.extend(inputs::realistic());
 
+    if let Some(select) = &options.input {
+        for name in select {
+            if !inputs.iter().any(|(known, _)| known == name) {
+                eprintln!("unknown input: {name}");
+                return ExitCode::from(2);
+            }
+        }
+        inputs.retain(|(name, _)| select.iter().any(|wanted| wanted == name));
+    }
+
     if let Some(name) = &options.child {
         let Some((_, input)) = inputs.iter().find(|(known, _)| known == name) else {
             eprintln!("unknown input: {name}");
@@ -190,6 +202,7 @@ fn parse_args() -> Result<Options, String> {
         runs: DEFAULT_RUNS,
         rounds: DEFAULT_ROUNDS,
         child: None,
+        input: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -208,6 +221,19 @@ fn parse_args() -> Result<Options, String> {
             "--runs" => options.runs = count(value()?)?,
             "--rounds" => options.rounds = count(value()?)?,
             "--child" => options.child = Some(value()?),
+            "--input" => {
+                let list = value()?;
+                let names: Vec<String> = list
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                if names.is_empty() {
+                    return Err(format!("empty --input list: {list}"));
+                }
+                options.input = Some(names);
+            }
             _ => return Err(format!("unknown argument: {arg}")),
         }
     }

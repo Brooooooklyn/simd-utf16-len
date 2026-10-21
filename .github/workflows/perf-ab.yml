@@ -49,6 +49,12 @@ jobs:
           AB_HEAD_FEATURES: ${{ inputs.head_features }}
           # The label accepts an intended slowdown.
           FAIL_ABOVE: ${{ !contains(github.event.pull_request.labels.*.name, 'perf-regression-accepted') && '5' || '' }}
+          # The gate runs a curated subset of stable size classes (the classes
+          # the pre-expansion harness measured). The full expanded input list
+          # exists for controlled local measurement via scripts/perf-ab.sh: on
+          # shared CI runners a hard ±5% gate over hundreds of ns-scale
+          # tiny_*/bnd_* inputs trips on machine noise, not on code changes.
+          GATE_INPUTS: "ascii_tiny,utf8_tiny,ascii_short,utf8_short,ascii,cjk,emoji,mixed,cjk_tail3,cjk_tail15,med_ascii_00256,med_mixed_00256,med_ascii_04096,med_mixed_04096,dist_sparse_start,dist_sparse_middle,dist_sparse_end,ascii_large,cjk_large,emoji_large,mixed_large,early_non_ascii,late_non_ascii,lg_ascii_64k,lg_cjk_64k,realistic_256,realistic_4k"
         run: |
           case "$EVENT" in
             # The merge commit's first parent is the tip of the base branch.
@@ -57,7 +63,7 @@ jobs:
             push) base=$PUSH_BEFORE; git cat-file -e "$base^{commit}" 2>/dev/null || base=HEAD^1 ;;
             *) base=${DISPATCH_BASE:-HEAD^1} ;;
           esac
-          scripts/perf-ab.sh "$base" --json perf-ab.json ${FAIL_ABOVE:+--fail-above "$FAIL_ABOVE"}
+          scripts/perf-ab.sh "$base" --json perf-ab.json ${FAIL_ABOVE:+--fail-above "$FAIL_ABOVE"} --input "$GATE_INPUTS"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
