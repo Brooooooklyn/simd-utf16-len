@@ -31,6 +31,30 @@ pub fn utf16_len(s: &str) -> usize {
     }
 }
 
+/// One batch's merged byte lanes, widened pairwise into the running 64-bit
+/// total. Each u64 lane counts only its own eight byte lanes' units, so it
+/// stays below the input's length and cannot wrap for any input a `&str`
+/// can hold. Factored out so the regression tests drive the production
+/// accumulation, not a copy of it.
+///
+/// # Safety
+/// NEON is baseline on aarch64.
+#[inline(always)]
+unsafe fn widen_into_total(total: uint64x2_t, merged: uint8x16_t) -> uint64x2_t {
+    unsafe { vpadalq_u32(total, vpaddlq_u16(vpaddlq_u8(merged))) }
+}
+
+/// The full count: the ASCII prefix, the residual merged byte lanes, and
+/// the batch total, reduced in 64 bits. Factored out with `widen_into_total`
+/// so the regression tests drive the production reduction, not a copy of it.
+///
+/// # Safety
+/// NEON is baseline on aarch64.
+#[inline(always)]
+unsafe fn combine(start: usize, merged: uint8x16_t, total: uint64x2_t) -> usize {
+    unsafe { start + vaddlvq_u8(merged) as usize + vaddvq_u64(total) as usize }
+}
+
 /// A function of its own, but always inlined: a caller that inlines
 /// `utf16_len` gets the whole count without a call, and one the inliner
 /// turns down calls `utf16_len` as before.
@@ -94,8 +118,10 @@ unsafe fn utf16_len_neon(bytes: &[u8], start: usize) -> usize {
             };
         }
 
-        // Sums of full batches, widened to u32 lanes without a horizontal add.
-        let mut total = vdupq_n_u32(0);
+        // Sums of full batches, as two u64 lanes without a horizontal add:
+        // u32 lanes and a u32 reduction returned the count modulo 2^32 for
+        // inputs past 4,294,968,959 units.
+        let mut total = vdupq_n_u64(0);
         let (mut a0, mut a1, mut a2, mut a3) = (zero, zero, zero, zero);
         macro_rules! chunk {
             () => {
@@ -112,8 +138,8 @@ unsafe fn utf16_len_neon(bytes: &[u8], start: usize) -> usize {
                 chunk!();
             }
             nb -= CHUNK * MAX_BATCH;
-            // More follows: widen now so the lanes can't overflow.
-            total = vpadalq_u16(total, vpaddlq_u8(merge!(a0, a1, a2, a3)));
+            // More follows: widen now so the byte lanes can't overflow.
+            total = widen_into_total(total, merge!(a0, a1, a2, a3));
             (a0, a1, a2, a3) = (zero, zero, zero, zero);
         }
         // Fewer than MAX_BATCH iterations remain.
@@ -130,6 +156,7 @@ unsafe fn utf16_len_neon(bytes: &[u8], start: usize) -> usize {
             a1 = vaddq_u8(a1, tail_units!());
         }
 
-        start + vaddlvq_u8(merge!(a0, a1, a2, a3)) as usize + vaddvq_u32(total) as usize
+        combine(start, merge!(a0, a1, a2, a3), total)
     }
 }
+
