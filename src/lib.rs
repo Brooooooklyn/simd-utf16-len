@@ -423,6 +423,9 @@ mod tests {
     /// kernels: a leading U+00E9, then ASCII up to 4,294,968,960 bytes
     /// (1,920 * 2,236,963, an exact NEON batch multiple, so no residual
     /// vectors). The former 32-bit NEON total returned 1,663 here.
+    // 64-bit only: its byte length does not fit a 32-bit usize, and only
+    // 64-bit targets can hand the kernels such an input anyway.
+    #[cfg(target_pointer_width = "64")]
     #[test]
     #[ignore = "allocates a 4 GiB string"]
     fn huge_input_total_above_u32() {
