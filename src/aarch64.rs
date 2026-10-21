@@ -160,3 +160,71 @@ unsafe fn utf16_len_neon(bytes: &[u8], start: usize) -> usize {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The merged byte lanes of one full batch of the review's Section-4.2
+    /// counterexample (a leading U+00E9, then ASCII): every lane of a real
+    /// ASCII batch holds 30 * 4 = 120 units, and the first batch's first
+    /// lane loses one unit to the two-byte leader, so the pairwise u32 sums
+    /// are [479, 480, 480, 480] for the first batch and [480, 480, 480, 480]
+    /// for every later one, as the exact arithmetic model computes.
+    const FIRST_BATCH: [u8; 16] = {
+        let mut lanes = [120; 16];
+        lanes[0] = 119;
+        lanes
+    };
+    const ASCII_BATCH: [u8; 16] = [120; 16];
+
+    fn merged(lanes: &[u8; 16]) -> uint8x16_t {
+        // SAFETY: the array holds 16 readable bytes, and NEON is baseline.
+        unsafe { vld1q_u8(lanes.as_ptr()) }
+    }
+
+    fn widen(total: uint64x2_t, lanes: &[u8; 16]) -> uint64x2_t {
+        // SAFETY: NEON is baseline on aarch64.
+        unsafe { widen_into_total(total, merged(lanes)) }
+    }
+
+    /// `FIRST_BATCH` once and `ASCII_BATCH` `batches - 1` times, counted
+    /// through the production widening fold and final combine.
+    fn counted(batches: usize) -> usize {
+        // SAFETY: NEON is baseline on aarch64.
+        let mut total = widen(unsafe { vdupq_n_u64(0) }, &FIRST_BATCH);
+        for _ in 1..batches {
+            total = widen(total, &ASCII_BATCH);
+        }
+        // SAFETY: NEON is baseline on aarch64.
+        unsafe { combine(0, merged(&[0; 16]), total) }
+    }
+
+    /// The Section-4.2 counterexample without its 4 GiB allocation: the
+    /// exact total exceeds u32::MAX, so a 32-bit final reduction of these
+    /// batches returned 1,663.
+    #[test]
+    fn batch_total_survives_a_wrapping_u32_sum() {
+        assert_eq!(counted(2_236_963), 4_294_968_959);
+    }
+
+    /// The model's second case: 8,947,849 batches push every former u32
+    /// lane itself over u32::MAX, so even widening only the final reduction
+    /// of 32-bit lanes returned 895.
+    #[test]
+    fn batch_total_survives_wrapping_u32_lanes() {
+        assert_eq!(counted(8_947_849), 17_179_870_079);
+    }
+
+    /// The final combine still adds the ASCII prefix and the residual
+    /// merged byte lanes, which the huge totals above leave at zero.
+    #[test]
+    fn combine_adds_prefix_and_residual() {
+        let mut residual = [0u8; 16];
+        residual[0] = 7;
+        residual[15] = 3;
+        // SAFETY: NEON is baseline on aarch64.
+        let total = widen(unsafe { vdupq_n_u64(0) }, &ASCII_BATCH);
+        // SAFETY: NEON is baseline on aarch64.
+        assert_eq!(unsafe { combine(5, merged(&residual), total) }, 5 + 10 + 1920);
+    }
+}
