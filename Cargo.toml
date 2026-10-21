@@ -17,6 +17,9 @@ avx512 = []
 # Criterion doesn't build for wasm32, and the unit tests don't need it.
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 criterion = { package = "codspeed-criterion-compat", version = "4.7" }
+# The optimized reference implementation, for the benches/simdutf comparison
+# only; never linked into the crate itself.
+simdutf = "0.7"
 
 # tests/guard_pages.rs maps guard pages with mmap/mprotect.
 [target.'cfg(unix)'.dev-dependencies]
