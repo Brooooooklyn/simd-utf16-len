@@ -108,8 +108,19 @@ fn main() -> ExitCode {
         }
     };
 
+    // Tiny lengths measure the public API's dispatch and inlining cost in
+    // ns/call; the larger groups give bytes/second. The 64 MiB streaming and
+    // rotating-working-set cases stay out: their standard-library comparison
+    // would dominate every run, and perf/kernels times them without it.
     let mut inputs = inputs::all();
     inputs.extend(inputs::short());
+    inputs.extend(inputs::tiny());
+    inputs.extend(inputs::boundaries());
+    inputs.extend(inputs::medium());
+    inputs.extend(inputs::large());
+    inputs.extend(inputs::distributions());
+    inputs.extend(inputs::alignment());
+    inputs.extend(inputs::realistic());
 
     if let Some(name) = &options.child {
         let Some((_, input)) = inputs.iter().find(|(known, _)| known == name) else {
@@ -214,7 +225,7 @@ fn count(value: String) -> Result<usize, String> {
 /// Times every input `options.runs` times, each side in its own fresh
 /// process, and combines the runs.
 fn measure_in_children(
-    inputs: &[(&'static str, String)],
+    inputs: &[(&'static str, &'static str)],
     base_exe: &Path,
     options: &Options,
 ) -> Result<Vec<Measurement>, String> {

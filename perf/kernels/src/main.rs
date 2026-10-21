@@ -1,6 +1,7 @@
 //! Times every kernel this CPU supports, and the `utf16_len` dispatch, on
 //! non-ASCII inputs of increasing size, to show where a wider kernel starts
-//! to pay off.
+//! to pay off. A streaming section adds the cases too large for the codspeed
+//! criterion benches: 64 MiB buffers and a rotating working set.
 //!
 //! Run `cargo run --release --manifest-path perf/kernels/Cargo.toml`, with
 //! `--features avx512` to include the AVX-512 kernel, or the Kernel sweep
@@ -93,6 +94,8 @@ fn main() {
         out.push('\n');
     }
 
+    streaming(&columns, &mut out);
+
     print!("{out}");
     if let Ok(path) = std::env::var("GITHUB_STEP_SUMMARY") {
         use std::io::Write as _;
@@ -105,6 +108,106 @@ fn main() {
             eprintln!("failed to append to {path}: {error}");
         }
     }
+}
+
+/// The cases too large for the codspeed criterion benches: one 64 MiB
+/// buffer per distribution, and a 16 x 4 MiB rotating working set so no
+/// call reuses the previous call's buffer. These exceed any single core's
+/// caches, so next to ns/call they report the effective rate, which is
+/// memory behavior rather than the hot-loop table above.
+fn streaming(columns: &[Column], out: &mut String) {
+    const MIB: usize = 1 << 20;
+    let fixed: [(&str, String); 2] = [
+        ("ascii_64mib", "a".repeat(64 * MIB)),
+        ("cjk_64mib", input(64 * MIB)),
+    ];
+    let rotating: Vec<String> = (0..16).map(|_| input(4 * MIB)).collect();
+
+    for (case, input) in &fixed {
+        let expected = input.encode_utf16().count();
+        for (name, f) in columns {
+            assert_eq!(f(input), expected, "{name} miscounts {case}");
+        }
+    }
+    let expected = rotating[0].encode_utf16().count();
+    for (name, f) in columns {
+        for buffer in &rotating {
+            assert_eq!(f(buffer), expected, "{name} miscounts a rotating buffer");
+        }
+    }
+
+    writeln!(out, "\n### Streaming\n").unwrap();
+    writeln!(
+        out,
+        "One 64 MiB buffer per distribution and a 16 x 4 MiB rotating working set (64 MiB); median ns per call over {ROUNDS} rounds, and the effective rate in GB/s (bytes per ns).\n",
+    )
+    .unwrap();
+    write!(out, "| Case | Bytes |").unwrap();
+    for (name, _) in columns {
+        write!(out, " {name} ns/call | {name} GB/s |").unwrap();
+    }
+    out.push('\n');
+    write!(out, "|:-----|------:|").unwrap();
+    for _ in columns {
+        write!(out, "------:|------:|").unwrap();
+    }
+    out.push('\n');
+
+    let mut row = |out: &mut String, case: &str, bytes: usize, samples: &mut [Vec<f64>]| {
+        write!(out, "| {case} | {bytes} |").unwrap();
+        for values in samples {
+            values.sort_by(f64::total_cmp);
+            let median = values[values.len() / 2];
+            write!(out, " {median:.1} | {:.2} |", bytes as f64 / median).unwrap();
+        }
+        out.push('\n');
+    };
+
+    for (case, input) in &fixed {
+        let iters: Vec<u64> = columns.iter().map(|(_, f)| calibrate(f, input)).collect();
+        let mut samples: Vec<Vec<f64>> = vec![Vec::with_capacity(ROUNDS); columns.len()];
+        for _ in 0..ROUNDS {
+            for (i, (_, f)) in columns.iter().enumerate() {
+                let elapsed = time_batch(f, input, iters[i]);
+                samples[i].push(elapsed.as_secs_f64() * 1e9 / iters[i] as f64);
+            }
+        }
+        row(out, case, input.len(), &mut samples);
+    }
+
+    let iters: Vec<u64> = columns
+        .iter()
+        .map(|(_, f)| calibrate_rotating(f, &rotating))
+        .collect();
+    let mut samples: Vec<Vec<f64>> = vec![Vec::with_capacity(ROUNDS); columns.len()];
+    for _ in 0..ROUNDS {
+        for (i, (_, f)) in columns.iter().enumerate() {
+            let elapsed = time_rotating(f, &rotating, iters[i]);
+            samples[i].push(elapsed.as_secs_f64() * 1e9 / iters[i] as f64);
+        }
+    }
+    row(out, "rotating_16x4mib", rotating[0].len(), &mut samples);
+}
+
+/// One batch cycling through `buffers`, so each call sees a different one.
+#[inline(never)]
+fn time_rotating(f: &fn(&str) -> usize, buffers: &[String], iters: u64) -> Duration {
+    let start = Instant::now();
+    let mut i = 0;
+    for _ in 0..iters {
+        black_box(f(black_box(&buffers[i])));
+        i = (i + 1) % buffers.len();
+    }
+    start.elapsed()
+}
+
+/// The iteration count that makes one rotating batch take at least `BATCH`.
+fn calibrate_rotating(f: &fn(&str) -> usize, buffers: &[String]) -> u64 {
+    let mut iters = 1;
+    while time_rotating(f, buffers, iters) < BATCH {
+        iters *= 2;
+    }
+    iters
 }
 
 /// The iteration count that makes one batch take at least `BATCH`.
