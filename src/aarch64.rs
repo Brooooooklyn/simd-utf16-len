@@ -17,6 +17,21 @@ use std::arch::aarch64::*;
 /// room for 3 leftover vectors and the tail: 240 + 3 * 2 + 2 = 248 < 256.
 const MAX_BATCH: usize = 30;
 
+/// Sum of a vector's sixteen byte lanes.
+///
+/// # Safety
+/// NEON is baseline on aarch64.
+#[inline(always)]
+unsafe fn sum_byte_lanes(v: uint8x16_t) -> usize {
+    // `vaddlvq_u8` has no Miri shim (llvm.aarch64.neon.uaddlv); the
+    // vpadalq/vaddvq formulation is bit-identical.
+    #[cfg(not(miri))]
+    let sum = unsafe { vaddlvq_u8(v) as usize };
+    #[cfg(miri)]
+    let sum = unsafe { vaddvq_u32(vpadalq_u16(vdupq_n_u32(0), vpaddlq_u8(v))) as usize };
+    sum
+}
+
 /// Compute the number of UTF-16 code units for UTF-8 string using NEON.
 #[inline]
 pub fn utf16_len(s: &str) -> usize {
@@ -52,7 +67,7 @@ unsafe fn widen_into_total(total: uint64x2_t, merged: uint8x16_t) -> uint64x2_t 
 /// NEON is baseline on aarch64.
 #[inline(always)]
 unsafe fn combine(start: usize, merged: uint8x16_t, total: uint64x2_t) -> usize {
-    unsafe { start + vaddlvq_u8(merged) as usize + vaddvq_u64(total) as usize }
+    unsafe { start + sum_byte_lanes(merged) + vaddvq_u64(total) as usize }
 }
 
 /// A function of its own, but always inlined: a caller that inlines
@@ -95,7 +110,7 @@ unsafe fn utf16_len_neon(bytes: &[u8], start: usize) -> usize {
         if len < LANES {
             // The whole input is shorter than a vector.
             let (v, keep) = short_vector!(sptr, nb, vld1q_u8);
-            return start + vaddlvq_u8(vandq_u8(units!(v), keep)) as usize;
+            return start + sum_byte_lanes(vandq_u8(units!(v), keep));
         }
 
         if nb < CHUNK {
@@ -109,7 +124,7 @@ unsafe fn utf16_len_neon(bytes: &[u8], start: usize) -> usize {
             if nb > 0 {
                 acc = vaddq_u8(acc, tail_units!());
             }
-            return start + vaddlvq_u8(acc) as usize;
+            return start + sum_byte_lanes(acc);
         }
 
         macro_rules! merge {
